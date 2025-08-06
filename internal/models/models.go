@@ -2,7 +2,7 @@ package models
 
 import "fmt"
 
-type PackageVersionData struct {
+type PackageVersionMetadata struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Dist    struct {
@@ -11,18 +11,28 @@ type PackageVersionData struct {
 	Dependencies map[string]string `json:"dependencies"`
 }
 
-type PackageData struct {
+type PackageMetadata struct {
 	DistTags struct {
 		Latest string `json:"latest"`
 	} `json:"dist-tags"`
-	Versions map[string]PackageVersionData
+	Versions map[string]PackageVersionMetadata
 }
 
-type PackageLock struct {
+type PackageInfo struct {
 	Dependencies []string
 }
 
-// debug
-func (v PackageVersionData) String() string {
+type DependencyMap map[string]PackageInfo
+
+func DebugMap(mp DependencyMap) {
+	for pkg, deps := range mp {
+		fmt.Println(pkg, ":")
+		for _, dep := range deps.Dependencies {
+			fmt.Println("\t", dep)
+		}
+	}
+}
+
+func (v PackageVersionMetadata) String() string {
 	return fmt.Sprintf("%s\n%s\n%+v\n%+v\n", v.Name, v.Version, v.Dist, v.Dependencies)
 }

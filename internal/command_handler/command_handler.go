@@ -2,13 +2,14 @@ package commandhandler
 
 import (
 	"fmt"
-	"github.com/shorya-1012/gnpm/internal/parser"
+
+	"github.com/shorya-1012/gnpm/internal/installer"
+	"github.com/shorya-1012/gnpm/internal/models"
 )
 
 type CommandHandler struct {
-	command        string
-	packageName    string
-	packageVersion string
+	command  string
+	argument string
 }
 
 func (ch *CommandHandler) ParseCommand(args []string) {
@@ -16,19 +17,24 @@ func (ch *CommandHandler) ParseCommand(args []string) {
 	packageInfo := args[2]
 
 	ch.command = command
-	ch.packageName, ch.packageVersion = parser.ParseVersion(packageInfo)
+	ch.argument = packageInfo
 }
 
 func (ch *CommandHandler) DebugDisplay() {
-	fmt.Println(ch.packageName)
-	fmt.Println(ch.packageVersion)
 	fmt.Println(ch.command)
+	fmt.Println(ch.argument)
 }
 
-func (ch *CommandHandler) Exectue() {
+func (ch *CommandHandler) Execute() {
 	switch ch.command {
 	case "install":
-		fmt.Println("Installing")
+		fmt.Println("Installing ... ")
+		installer := installer.Installer{
+			Dependencies: make(models.DependencyMap),
+		}
+		// var installer installer.Installer
+		installer.HandleInstall(ch.argument)
+		models.DebugMap(installer.Dependencies)
 	default:
 		fmt.Println("Command not found")
 	}
