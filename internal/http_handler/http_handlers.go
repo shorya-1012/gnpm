@@ -1,9 +1,15 @@
 package httphandler
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/shorya-1012/gnpm/internal/constants"
 	"github.com/shorya-1012/gnpm/internal/models"
@@ -11,10 +17,25 @@ import (
 
 // should be prioritised
 func FetchMetaDataWithVersion(packageName string, fullVersion string) models.PackageVersionMetadata {
-	response, err := http.Get(fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion))
+
+	requestUrl := fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion)
+	request, err := http.NewRequest("GET", requestUrl, nil)
 	if err != nil {
-		fmt.Println("Unable to get metadata from registry")
+		fmt.Println("Unable to create request")
+		fmt.Println(err)
 	}
+
+	// I don't actually know what this does
+	// but somehow this makes the request faster by reducing response body size
+	request.Header.Set("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*")
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Println("Unable to get response from registry: ,", packageName, fullVersion)
+		fmt.Println(err)
+	}
+
 	defer response.Body.Close()
 	var packageMetaData models.PackageVersionMetadata
 
@@ -29,10 +50,24 @@ func FetchMetaDataWithVersion(packageName string, fullVersion string) models.Pac
 
 // should be avoided as slower
 func FetchFullMetaData(packageName string) models.PackageMetadata {
-	response, err := http.Get(fmt.Sprintf("%s/%s", constants.RegistryBaseURL, packageName))
+	requestUrl := fmt.Sprintf("%s/%s", constants.RegistryBaseURL, packageName)
+	request, err := http.NewRequest("GET", requestUrl, nil)
 	if err != nil {
-		fmt.Println("Unable to get metadata from registry")
+		fmt.Println("Unable to create request")
+		fmt.Println(err)
 	}
+
+	// I don't actually know what this does
+	// but somehow this makes the request faster by reducing response body size
+	request.Header.Set("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*")
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Println("Unable to get response from registry: ,", packageName)
+		fmt.Println(err)
+	}
+
 	defer response.Body.Close()
 	var packageMetaData models.PackageMetadata
 
@@ -43,4 +78,59 @@ func FetchFullMetaData(packageName string) models.PackageMetadata {
 	}
 
 	return packageMetaData
+}
+
+func DownloadAndInstallTarBall(url string, destDir string) error {
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Unable to get Tarball")
+		fmt.Println(err)
+	}
+	defer response.Body.Close()
+
+	gzReader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		fmt.Println("Unable to create gzReader")
+		fmt.Println(err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		relPath := strings.TrimPrefix(header.Name, "package/")
+		targetPath := filepath.Join(destDir, relPath)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, 0755); err != nil {
+				return fmt.Errorf("mkdir failed: %w", err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("mkdir parent failed: %w", err)
+			}
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return fmt.Errorf("create file failed: %w", err)
+			}
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fmt.Errorf("write file failed: %w", err)
+			}
+			outFile.Close()
+		default:
+			//ignore
+		}
+
+	}
+	return nil
 }

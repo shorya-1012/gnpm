@@ -3,6 +3,7 @@ package commandhandler
 import (
 	"fmt"
 
+	"github.com/Masterminds/semver"
 	"github.com/shorya-1012/gnpm/internal/installer"
 	"github.com/shorya-1012/gnpm/internal/models"
 )
@@ -31,10 +32,10 @@ func (ch *CommandHandler) Execute() {
 		fmt.Println("Installing ... ")
 		installer := installer.Installer{
 			Dependencies: make(models.DependencyMap),
+			ResolvedMap:  make(map[string][]*semver.Version),
 		}
 		// var installer installer.Installer
 		installer.HandleInstall(ch.argument)
-		models.DebugMap(installer.Dependencies)
 	default:
 		fmt.Println("Command not found")
 	}
