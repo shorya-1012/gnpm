@@ -15,10 +15,7 @@ import (
 	"github.com/shorya-1012/gnpm/internal/models"
 )
 
-// should be prioritised
-func FetchMetaDataWithVersion(packageName string, fullVersion string) models.PackageVersionMetadata {
-
-	requestUrl := fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion)
+func createRequest(requestUrl string) *http.Request {
 	request, err := http.NewRequest("GET", requestUrl, nil)
 	if err != nil {
 		fmt.Println("Unable to create request")
@@ -26,8 +23,17 @@ func FetchMetaDataWithVersion(packageName string, fullVersion string) models.Pac
 	}
 
 	// I don't actually know what this does
-	// but somehow this makes the request faster by reducing response body size
+	//  but somehow this makes the request faster by reducing response body size
 	request.Header.Set("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*")
+	return request
+}
+
+// should be prioritised
+func FetchMetaDataWithVersion(packageName string, fullVersion string) models.PackageVersionMetadata {
+
+	requestUrl := fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion)
+
+	request := createRequest(requestUrl)
 
 	client := &http.Client{}
 	response, err := client.Do(request)
@@ -51,15 +57,7 @@ func FetchMetaDataWithVersion(packageName string, fullVersion string) models.Pac
 // should be avoided as slower
 func FetchFullMetaData(packageName string) models.PackageMetadata {
 	requestUrl := fmt.Sprintf("%s/%s", constants.RegistryBaseURL, packageName)
-	request, err := http.NewRequest("GET", requestUrl, nil)
-	if err != nil {
-		fmt.Println("Unable to create request")
-		fmt.Println(err)
-	}
-
-	// I don't actually know what this does
-	// but somehow this makes the request faster by reducing response body size
-	request.Header.Set("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*")
+	request := createRequest(requestUrl)
 
 	client := &http.Client{}
 	response, err := client.Do(request)

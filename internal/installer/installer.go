@@ -15,9 +15,11 @@ import (
 )
 
 type Installer struct {
-	Dependencies models.DependencyMap
-	ResolvedMap  map[string][]*semver.Version
-	mux          sync.Mutex
+	Dependencies       models.DependencyMap
+	ResolvedMap        map[string][]*semver.Version
+	metaDataCache      sync.Map
+	dependencyMapMutex sync.Mutex
+	resolvedMapMutex   sync.Mutex
 }
 
 type PackageInstallInfo struct {
@@ -26,12 +28,13 @@ type PackageInstallInfo struct {
 	stringified     string
 }
 
+// entry point for the installer
 func (i *Installer) HandleInstall(packageName string) {
 	packageName, packageVersion := parser.ParseVersion(packageName)
 	i.installPackage(packageName, packageVersion, nil)
 }
 
-func (i *Installer) installPackage(packageName string, packageVersion string, parent *string) PackageInstallInfo {
+func (i *Installer) installPackage(packageName string, packageVersion string, parent *string) {
 	fullVersion, _ := semver.NewVersion(packageVersion)
 	var pkgInfo PackageInstallInfo
 	var pkgMetadata models.PackageVersionMetadata
@@ -52,10 +55,10 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 				i.appendVersion(parent, versionString)
 			}
 
-			return PackageInstallInfo{}
+			return
 		}
 
-		pkgMetadata = httphandler.FetchMetaDataWithVersion(packageName, fullVersion.String())
+		pkgMetadata = i.fetchMetaDataWithCache(packageName, fullVersion.String())
 	}
 
 	pkgInfo.name = packageName
@@ -68,7 +71,7 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 
 	i.resolveDependencies(&pkgInfo)
 
-	i.mux.Lock()
+	i.resolvedMapMutex.Lock()
 	resolvedInfo, found := i.ResolvedMap[packageName]
 	if !found {
 		resolvedInfo = make([]*semver.Version, 0)
@@ -76,20 +79,18 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 
 	resolvedInfo = append(resolvedInfo, fullVersion)
 	i.ResolvedMap[packageName] = resolvedInfo
-	i.mux.Unlock()
+	i.resolvedMapMutex.Unlock()
 
 	installPath := filepath.Join("node_modules", packageName)
 	err := httphandler.DownloadAndInstallTarBall(pkgInfo.versionMetaData.Dist.Tarball, installPath)
 	if err != nil {
 		fmt.Println("Failed to install package : ", packageName, " ", packageVersion)
 	}
-
-	return pkgInfo
 }
 
 func (i *Installer) isResolved(packageInfo string) bool {
-	i.mux.Lock()
-	defer i.mux.Unlock()
+	i.dependencyMapMutex.Lock()
+	defer i.dependencyMapMutex.Unlock()
 	_, found := i.Dependencies[packageInfo]
 	if found {
 		return true
@@ -103,8 +104,8 @@ func (i *Installer) isResolved(packageInfo string) bool {
 
 // append version
 func (i *Installer) appendVersion(parent *string, packageVersion string) {
-	i.mux.Lock()
-	defer i.mux.Unlock()
+	i.dependencyMapMutex.Lock()
+	defer i.dependencyMapMutex.Unlock()
 
 	parentInfo, found := i.Dependencies[*parent]
 	if !found {
@@ -134,10 +135,19 @@ func (i *Installer) resolveDependencies(pkgInfo *PackageInstallInfo) {
 	wg.Wait()
 }
 
+func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion string) models.PackageVersionMetadata {
+	key := fmt.Sprintf("%s@%s", packageName, packageVersion)
+	if cached, ok := i.metaDataCache.Load(key); ok {
+		return cached.(models.PackageVersionMetadata)
+	}
+	metaData := httphandler.FetchMetaDataWithVersion(packageName, packageVersion)
+	i.metaDataCache.Store(key, metaData)
+	return metaData
+}
+
 func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string) models.PackageVersionMetadata {
 	if *semVersion == "latest" {
-		pkgFullMetaData := httphandler.FetchFullMetaData(*packageName)
-		return pkgFullMetaData.Versions[pkgFullMetaData.DistTags.Latest]
+		return i.fetchMetaDataWithCache(*packageName, "latest")
 	}
 	// if the version is not latest than it has to be a constraint like ^1.1.0
 
@@ -158,12 +168,15 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 		fmt.Println(err)
 	}
 
+	i.resolvedMapMutex.Lock()
 	resolvedPkgVersions, found := i.ResolvedMap[*packageName]
+	i.resolvedMapMutex.Unlock()
+
 	if found {
 		for _, v := range resolvedPkgVersions {
 			if constraint.Check(v) {
 				versionStr := v.String()
-				return httphandler.FetchMetaDataWithVersion(*packageName, versionStr)
+				return i.fetchMetaDataWithCache(*packageName, versionStr)
 			}
 		}
 	}
