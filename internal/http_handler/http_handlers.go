@@ -10,10 +10,30 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shorya-1012/gnpm/internal/constants"
 	"github.com/shorya-1012/gnpm/internal/models"
 )
+
+type HttpHandler struct {
+	httpClient *http.Client
+}
+
+func NewHttpHandler() *HttpHandler {
+	handler := HttpHandler{
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+				DisableCompression:  false,
+				ForceAttemptHTTP2:   true,
+			},
+		},
+	}
+	return &handler
+}
 
 func createRequest(requestUrl string) *http.Request {
 	request, err := http.NewRequest("GET", requestUrl, nil)
@@ -29,14 +49,14 @@ func createRequest(requestUrl string) *http.Request {
 }
 
 // should be prioritised
-func FetchMetaDataWithVersion(packageName string, fullVersion string) models.PackageVersionMetadata {
+func (h *HttpHandler) FetchMetaDataWithVersion(packageName string, fullVersion string) models.PackageVersionMetadata {
 
 	requestUrl := fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion)
-
 	request := createRequest(requestUrl)
 
-	client := &http.Client{}
-	response, err := client.Do(request)
+	// client := &http.Client{}
+	// response, err := client.Do(request)
+	response, err := h.httpClient.Do(request)
 	if err != nil {
 		fmt.Println("Unable to get response from registry: ,", packageName, fullVersion)
 		fmt.Println(err)
@@ -55,12 +75,11 @@ func FetchMetaDataWithVersion(packageName string, fullVersion string) models.Pac
 }
 
 // should be avoided as slower
-func FetchFullMetaData(packageName string) models.PackageMetadata {
+func (h *HttpHandler) FetchFullMetaData(packageName string) models.PackageMetadata {
 	requestUrl := fmt.Sprintf("%s/%s", constants.RegistryBaseURL, packageName)
 	request := createRequest(requestUrl)
 
-	client := &http.Client{}
-	response, err := client.Do(request)
+	response, err := h.httpClient.Do(request)
 	if err != nil {
 		fmt.Println("Unable to get response from registry: ,", packageName)
 		fmt.Println(err)
@@ -78,8 +97,9 @@ func FetchFullMetaData(packageName string) models.PackageMetadata {
 	return packageMetaData
 }
 
-func DownloadAndInstallTarBall(url string, destDir string) error {
-	response, err := http.Get(url)
+func (h *HttpHandler) DownloadAndInstallTarBall(url string, destDir string) error {
+	response, err := h.httpClient.Get(url)
+
 	if err != nil {
 		fmt.Println("Unable to get Tarball")
 		fmt.Println(err)

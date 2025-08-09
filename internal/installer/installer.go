@@ -20,7 +20,9 @@ type Installer struct {
 	ResolvedMap       map[string][]*semver.Version
 	metaDataCache     sync.Map
 	fullMetaDataChace sync.Map
-	mutex             sync.Mutex
+	downloadCache     sync.Map
+	mutex             sync.RWMutex
+	httpHandler       *httphandler.HttpHandler
 
 	taskChan     chan InstallTask
 	downloadChan chan DownloadTask
@@ -55,6 +57,7 @@ func NewInstaller() *Installer {
 		taskChan:     make(chan InstallTask, 1000),
 		downloadChan: make(chan DownloadTask, 1000),
 		sem:          make(chan struct{}, 32),
+		httpHandler:  httphandler.NewHttpHandler(),
 	}
 	return &installer
 }
@@ -98,7 +101,7 @@ func (i *Installer) workerDownloader() {
 		i.sem <- struct{}{}
 
 		// fmt.Println("From workerDownloader:", task.installPath)
-		err := httphandler.DownloadAndInstallTarBall(task.tarball, task.installPath)
+		err := i.httpHandler.DownloadAndInstallTarBall(task.tarball, task.installPath)
 		<-i.sem
 		if err != nil {
 			fmt.Println("Failed to install package : ", task.name)
@@ -157,24 +160,31 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 	i.ResolvedMap[packageName] = resolvedInfo
 	i.mutex.Unlock()
 
-	// installPath :=
-	i.downloadWg.Add(1)
-	i.downloadChan <- DownloadTask{
-		name:        pkgInfo.name,
-		tarball:     pkgInfo.versionMetaData.Dist.Tarball,
-		installPath: filepath.Join("node_modules", packageName),
+	key := pkgInfo.stringified
+	if _, found := i.downloadCache.LoadOrStore(key, struct{}{}); found {
+	} else {
+		i.downloadWg.Add(1)
+		i.downloadChan <- DownloadTask{
+			name:        pkgInfo.name,
+			tarball:     pkgInfo.versionMetaData.Dist.Tarball,
+			installPath: filepath.Join("node_modules", packageName),
+		}
 	}
 
 }
 
 func (i *Installer) isResolved(packageInfo string) bool {
-	i.mutex.Lock()
-	defer i.mutex.Unlock()
+	// i.mutex.Lock()
+	// defer i.mutex.Unlock()
+	i.mutex.RLock()
 	_, found := i.Dependencies[packageInfo]
+	i.mutex.RUnlock()
 	if found {
 		return true
 	}
 
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
 	i.Dependencies[packageInfo] = models.PackageInfo{
 		Dependencies: []string{},
 	}
@@ -206,7 +216,7 @@ func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion st
 	if cached, ok := i.metaDataCache.Load(key); ok {
 		return cached.(models.PackageVersionMetadata)
 	}
-	metaData := httphandler.FetchMetaDataWithVersion(packageName, packageVersion)
+	metaData := i.httpHandler.FetchMetaDataWithVersion(packageName, packageVersion)
 	i.metaDataCache.Store(key, metaData)
 	return metaData
 }
@@ -215,7 +225,7 @@ func (i *Installer) fetchFullMetaDataWithCache(packageName string) models.Packag
 	if cached, ok := i.fullMetaDataChace.Load(packageName); ok {
 		return cached.(models.PackageMetadata)
 	}
-	metaData := httphandler.FetchFullMetaData(packageName)
+	metaData := i.httpHandler.FetchFullMetaData(packageName)
 	i.fullMetaDataChace.Store(packageName, metaData)
 	return metaData
 }
@@ -242,9 +252,9 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 	}
 
 	// check if a already resolved version of the package passes the required constraint
-	i.mutex.Lock()
+	i.mutex.RLock()
 	resolvedPkgVersions, found := i.ResolvedMap[*packageName]
-	i.mutex.Unlock()
+	i.mutex.RUnlock()
 
 	if found {
 		for _, v := range resolvedPkgVersions {
