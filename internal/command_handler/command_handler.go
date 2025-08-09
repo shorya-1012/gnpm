@@ -3,9 +3,7 @@ package commandhandler
 import (
 	"fmt"
 
-	"github.com/Masterminds/semver"
 	"github.com/shorya-1012/gnpm/internal/installer"
-	"github.com/shorya-1012/gnpm/internal/models"
 )
 
 type CommandHandler struct {
@@ -30,10 +28,7 @@ func (ch *CommandHandler) Execute() {
 	switch ch.command {
 	case "install":
 		fmt.Println("Installing ... ")
-		installer := installer.Installer{
-			Dependencies: make(models.DependencyMap),
-			ResolvedMap:  make(map[string][]*semver.Version),
-		}
+		installer := installer.NewInstaller()
 		// var installer installer.Installer
 		installer.HandleInstall(ch.argument)
 	default:

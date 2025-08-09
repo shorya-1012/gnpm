@@ -48,14 +48,22 @@ type DownloadTask struct {
 	installPath string
 }
 
+func NewInstaller() *Installer {
+	installer := Installer{
+		Dependencies: make(models.DependencyMap),
+		ResolvedMap:  make(map[string][]*semver.Version),
+		taskChan:     make(chan InstallTask, 1000),
+		downloadChan: make(chan DownloadTask, 1000),
+		sem:          make(chan struct{}, 32),
+	}
+	return &installer
+}
+
 // entry point for the installer
 func (i *Installer) HandleInstall(packageName string) {
-	i.taskChan = make(chan InstallTask, 1000)
-	i.downloadChan = make(chan DownloadTask, 1000)
-	i.sem = make(chan struct{}, 32)
 	workerCount := runtime.NumCPU()
 
-	for w := 0; w < workerCount*4; w++ {
+	for w := 0; w < workerCount*8; w++ {
 		go i.worker()
 	}
 
@@ -134,7 +142,10 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 		i.appendVersion(parent, pkgInfo.stringified)
 	}
 
-	i.resolveDependencies(&pkgInfo)
+	// resolve dependencies recursively
+	for depName, depVersion := range pkgInfo.versionMetaData.Dependencies {
+		i.enqueue(depName, depVersion, &pkgInfo.name)
+	}
 
 	i.mutex.Lock()
 	resolvedInfo, found := i.ResolvedMap[packageName]
@@ -146,13 +157,12 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 	i.ResolvedMap[packageName] = resolvedInfo
 	i.mutex.Unlock()
 
-	installPath := filepath.Join("node_modules", packageName)
-
+	// installPath :=
 	i.downloadWg.Add(1)
 	i.downloadChan <- DownloadTask{
 		name:        pkgInfo.name,
 		tarball:     pkgInfo.versionMetaData.Dist.Tarball,
-		installPath: installPath,
+		installPath: filepath.Join("node_modules", packageName),
 	}
 
 }
@@ -191,13 +201,6 @@ func (i *Installer) appendVersion(parent *string, packageVersion string) {
 	i.Dependencies[*parent] = parentInfo
 }
 
-// resolve Dependencies
-func (i *Installer) resolveDependencies(pkgInfo *PackageInstallInfo) {
-	for depName, depVersion := range pkgInfo.versionMetaData.Dependencies {
-		i.enqueue(depName, depVersion, &pkgInfo.name)
-	}
-}
-
 func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion string) models.PackageVersionMetadata {
 	key := fmt.Sprintf("%s@%s", packageName, packageVersion)
 	if cached, ok := i.metaDataCache.Load(key); ok {
@@ -223,8 +226,6 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 	}
 	// if the version is not latest than it has to be a constraint like ^1.1.0
 
-	// check if a already resolved version of the package passes the required constraint
-
 	// try to normalize constrainst if they are in the wrong format
 	// like >= 2.1.2 < 3.0.0 (semver throws a error here)
 	re := regexp.MustCompile(`(>=|>|<=|<|=|~|\^)?\s*([\d]+\.[\d]+\.[\d]+)`)
@@ -240,6 +241,7 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 		fmt.Println(err)
 	}
 
+	// check if a already resolved version of the package passes the required constraint
 	i.mutex.Lock()
 	resolvedPkgVersions, found := i.ResolvedMap[*packageName]
 	i.mutex.Unlock()
@@ -254,7 +256,6 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 	}
 
 	pkgFullMetaData := i.fetchFullMetaDataWithCache(*packageName)
-	// pkgFullMetaData := httphandler.FetchFullMetaData(*packageName)
 
 	var versions []*semver.Version
 
