@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -15,11 +16,15 @@ import (
 )
 
 type Installer struct {
-	Dependencies       models.DependencyMap
-	ResolvedMap        map[string][]*semver.Version
-	metaDataCache      sync.Map
-	dependencyMapMutex sync.Mutex
-	resolvedMapMutex   sync.Mutex
+	Dependencies  models.DependencyMap
+	ResolvedMap   map[string][]*semver.Version
+	metaDataCache sync.Map
+	mutex         sync.Mutex
+
+	taskChan chan InstallTask
+	wg       sync.WaitGroup
+
+	sem chan struct{}
 }
 
 type PackageInstallInfo struct {
@@ -28,10 +33,41 @@ type PackageInstallInfo struct {
 	stringified     string
 }
 
+type InstallTask struct {
+	Name    string
+	Version string
+	Parent  *string
+}
+
 // entry point for the installer
 func (i *Installer) HandleInstall(packageName string) {
+
+	i.taskChan = make(chan InstallTask, 100)
+	i.sem = make(chan struct{}, runtime.NumCPU()*10)
+	workerCount := runtime.NumCPU() * 4
+
+	for w := 0; w < workerCount; w++ {
+		go i.worker()
+	}
+
 	packageName, packageVersion := parser.ParseVersion(packageName)
-	i.installPackage(packageName, packageVersion, nil)
+	i.enqueue(packageName, packageVersion, nil)
+	// i.installPackage(packageName, packageVersion, nil)
+
+	i.wg.Wait()
+	close(i.taskChan)
+}
+
+func (i *Installer) enqueue(name, version string, parent *string) {
+	i.wg.Add(1)
+	i.taskChan <- InstallTask{Name: name, Version: version, Parent: parent}
+}
+
+func (i *Installer) worker() {
+	for task := range i.taskChan {
+		i.installPackage(task.Name, task.Version, task.Parent)
+		i.wg.Done()
+	}
 }
 
 func (i *Installer) installPackage(packageName string, packageVersion string, parent *string) {
@@ -71,7 +107,7 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 
 	i.resolveDependencies(&pkgInfo)
 
-	i.resolvedMapMutex.Lock()
+	i.mutex.Lock()
 	resolvedInfo, found := i.ResolvedMap[packageName]
 	if !found {
 		resolvedInfo = make([]*semver.Version, 0)
@@ -79,18 +115,23 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 
 	resolvedInfo = append(resolvedInfo, fullVersion)
 	i.ResolvedMap[packageName] = resolvedInfo
-	i.resolvedMapMutex.Unlock()
+	i.mutex.Unlock()
 
 	installPath := filepath.Join("node_modules", packageName)
+
+	i.sem <- struct{}{}
+
 	err := httphandler.DownloadAndInstallTarBall(pkgInfo.versionMetaData.Dist.Tarball, installPath)
+
+	<-i.sem
 	if err != nil {
 		fmt.Println("Failed to install package : ", packageName, " ", packageVersion)
 	}
 }
 
 func (i *Installer) isResolved(packageInfo string) bool {
-	i.dependencyMapMutex.Lock()
-	defer i.dependencyMapMutex.Unlock()
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
 	_, found := i.Dependencies[packageInfo]
 	if found {
 		return true
@@ -104,8 +145,8 @@ func (i *Installer) isResolved(packageInfo string) bool {
 
 // append version
 func (i *Installer) appendVersion(parent *string, packageVersion string) {
-	i.dependencyMapMutex.Lock()
-	defer i.dependencyMapMutex.Unlock()
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
 
 	parentInfo, found := i.Dependencies[*parent]
 	if !found {
@@ -124,15 +165,9 @@ func (i *Installer) appendVersion(parent *string, packageVersion string) {
 
 // resolve Dependencies
 func (i *Installer) resolveDependencies(pkgInfo *PackageInstallInfo) {
-	var wg sync.WaitGroup
-	for dependencyName, dependencyVersion := range pkgInfo.versionMetaData.Dependencies {
-		wg.Add(1)
-		go func(depName string, depVersion string) {
-			defer wg.Done()
-			i.installPackage(depName, depVersion, &pkgInfo.name)
-		}(dependencyName, dependencyVersion)
+	for depName, depVersion := range pkgInfo.versionMetaData.Dependencies {
+		i.enqueue(depName, depVersion, &pkgInfo.name)
 	}
-	wg.Wait()
 }
 
 func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion string) models.PackageVersionMetadata {
@@ -168,9 +203,9 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 		fmt.Println(err)
 	}
 
-	i.resolvedMapMutex.Lock()
+	i.mutex.Lock()
 	resolvedPkgVersions, found := i.ResolvedMap[*packageName]
-	i.resolvedMapMutex.Unlock()
+	i.mutex.Unlock()
 
 	if found {
 		for _, v := range resolvedPkgVersions {
