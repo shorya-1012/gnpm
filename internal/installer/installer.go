@@ -16,13 +16,16 @@ import (
 )
 
 type Installer struct {
-	Dependencies  models.DependencyMap
-	ResolvedMap   map[string][]*semver.Version
-	metaDataCache sync.Map
-	mutex         sync.Mutex
+	Dependencies      models.DependencyMap
+	ResolvedMap       map[string][]*semver.Version
+	metaDataCache     sync.Map
+	fullMetaDataChace sync.Map
+	mutex             sync.Mutex
 
-	taskChan chan InstallTask
-	wg       sync.WaitGroup
+	taskChan     chan InstallTask
+	downloadChan chan DownloadTask
+	taskWg       sync.WaitGroup
+	downloadWg   sync.WaitGroup
 
 	sem chan struct{}
 }
@@ -39,34 +42,60 @@ type InstallTask struct {
 	Parent  *string
 }
 
+type DownloadTask struct {
+	name        string
+	tarball     string
+	installPath string
+}
+
 // entry point for the installer
 func (i *Installer) HandleInstall(packageName string) {
+	i.taskChan = make(chan InstallTask, 1000)
+	i.downloadChan = make(chan DownloadTask, 1000)
+	i.sem = make(chan struct{}, 32)
+	workerCount := runtime.NumCPU()
 
-	i.taskChan = make(chan InstallTask, 100)
-	i.sem = make(chan struct{}, runtime.NumCPU()*10)
-	workerCount := runtime.NumCPU() * 4
-
-	for w := 0; w < workerCount; w++ {
+	for w := 0; w < workerCount*4; w++ {
 		go i.worker()
+	}
+
+	for w := 0; w < runtime.NumCPU()*10; w++ {
+		go i.workerDownloader()
 	}
 
 	packageName, packageVersion := parser.ParseVersion(packageName)
 	i.enqueue(packageName, packageVersion, nil)
-	// i.installPackage(packageName, packageVersion, nil)
 
-	i.wg.Wait()
+	i.taskWg.Wait()
 	close(i.taskChan)
+
+	i.downloadWg.Wait()
+	close(i.downloadChan)
 }
 
 func (i *Installer) enqueue(name, version string, parent *string) {
-	i.wg.Add(1)
+	i.taskWg.Add(1)
 	i.taskChan <- InstallTask{Name: name, Version: version, Parent: parent}
 }
 
 func (i *Installer) worker() {
 	for task := range i.taskChan {
 		i.installPackage(task.Name, task.Version, task.Parent)
-		i.wg.Done()
+		i.taskWg.Done()
+	}
+}
+
+func (i *Installer) workerDownloader() {
+	for task := range i.downloadChan {
+		i.sem <- struct{}{}
+
+		// fmt.Println("From workerDownloader:", task.installPath)
+		err := httphandler.DownloadAndInstallTarBall(task.tarball, task.installPath)
+		<-i.sem
+		if err != nil {
+			fmt.Println("Failed to install package : ", task.name)
+		}
+		i.downloadWg.Done()
 	}
 }
 
@@ -119,14 +148,13 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 
 	installPath := filepath.Join("node_modules", packageName)
 
-	i.sem <- struct{}{}
-
-	err := httphandler.DownloadAndInstallTarBall(pkgInfo.versionMetaData.Dist.Tarball, installPath)
-
-	<-i.sem
-	if err != nil {
-		fmt.Println("Failed to install package : ", packageName, " ", packageVersion)
+	i.downloadWg.Add(1)
+	i.downloadChan <- DownloadTask{
+		name:        pkgInfo.name,
+		tarball:     pkgInfo.versionMetaData.Dist.Tarball,
+		installPath: installPath,
 	}
+
 }
 
 func (i *Installer) isResolved(packageInfo string) bool {
@@ -180,6 +208,15 @@ func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion st
 	return metaData
 }
 
+func (i *Installer) fetchFullMetaDataWithCache(packageName string) models.PackageMetadata {
+	if cached, ok := i.fullMetaDataChace.Load(packageName); ok {
+		return cached.(models.PackageMetadata)
+	}
+	metaData := httphandler.FetchFullMetaData(packageName)
+	i.fullMetaDataChace.Store(packageName, metaData)
+	return metaData
+}
+
 func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string) models.PackageVersionMetadata {
 	if *semVersion == "latest" {
 		return i.fetchMetaDataWithCache(*packageName, "latest")
@@ -216,7 +253,8 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 		}
 	}
 
-	pkgFullMetaData := httphandler.FetchFullMetaData(*packageName)
+	pkgFullMetaData := i.fetchFullMetaDataWithCache(*packageName)
+	// pkgFullMetaData := httphandler.FetchFullMetaData(*packageName)
 
 	var versions []*semver.Version
 
