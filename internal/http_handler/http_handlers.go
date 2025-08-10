@@ -48,53 +48,56 @@ func createRequest(requestUrl string) *http.Request {
 	return request
 }
 
-// should be prioritised
-func (h *HttpHandler) FetchMetaDataWithVersion(packageName string, fullVersion string) models.PackageVersionMetadata {
+// should be prioritised lesser response size
+func (h *HttpHandler) FetchMetaDataWithVersion(packageName string, fullVersion string) (models.PackageVersionMetadata, error) {
 
 	requestUrl := fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion)
 	request := createRequest(requestUrl)
 
-	// client := &http.Client{}
-	// response, err := client.Do(request)
 	response, err := h.httpClient.Do(request)
 	if err != nil {
-		fmt.Println("Unable to get response from registry: ,", packageName, fullVersion)
-		fmt.Println(err)
+		return models.PackageVersionMetadata{}, fmt.Errorf("Unable to get response from registry for %s %s: %w", packageName, fullVersion, err)
 	}
 
 	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return models.PackageVersionMetadata{}, fmt.Errorf("Registry returned status %d for %s %s", response.StatusCode, packageName, fullVersion)
+	}
+
 	var packageMetaData models.PackageVersionMetadata
 
 	if err := json.NewDecoder(response.Body).Decode(&packageMetaData); err != nil {
 		fmt.Println("Error Decoding Json : ")
-		fmt.Println(packageName, ": ", fullVersion)
-		fmt.Println(err)
+		return models.PackageVersionMetadata{}, fmt.Errorf("Error decoding JSON for %s %s: %w", packageName, fullVersion, err)
 	}
 
-	return packageMetaData
+	return packageMetaData, nil
 }
 
 // should be avoided as slower
-func (h *HttpHandler) FetchFullMetaData(packageName string) models.PackageMetadata {
+func (h *HttpHandler) FetchFullMetaData(packageName string) (models.PackageMetadata, error) {
 	requestUrl := fmt.Sprintf("%s/%s", constants.RegistryBaseURL, packageName)
 	request := createRequest(requestUrl)
 
 	response, err := h.httpClient.Do(request)
 	if err != nil {
-		fmt.Println("Unable to get response from registry: ,", packageName)
-		fmt.Println(err)
+		return models.PackageMetadata{}, fmt.Errorf("Unable to get response from registry for %s: %w", packageName, err)
 	}
 
 	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return models.PackageMetadata{}, fmt.Errorf("Registry returned status %d for %s ", response.StatusCode, packageName)
+	}
+
 	var packageMetaData models.PackageMetadata
 
 	if err := json.NewDecoder(response.Body).Decode(&packageMetaData); err != nil {
-		fmt.Println("Error Decoding Json")
-		fmt.Println(packageName)
-		fmt.Println(err)
+		return models.PackageMetadata{}, fmt.Errorf("Error decoding JSON for %s : %w", packageName, err)
 	}
 
-	return packageMetaData
+	return packageMetaData, nil
 }
 
 func (h *HttpHandler) DownloadAndInstallTarBall(url string, destDir string) error {

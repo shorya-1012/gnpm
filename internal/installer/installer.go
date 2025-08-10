@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -216,7 +217,11 @@ func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion st
 	if cached, ok := i.metaDataCache.Load(key); ok {
 		return cached.(models.PackageVersionMetadata)
 	}
-	metaData := i.httpHandler.FetchMetaDataWithVersion(packageName, packageVersion)
+	metaData, err := i.httpHandler.FetchMetaDataWithVersion(packageName, packageVersion)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	i.metaDataCache.Store(key, metaData)
 	return metaData
 }
@@ -225,7 +230,12 @@ func (i *Installer) fetchFullMetaDataWithCache(packageName string) models.Packag
 	if cached, ok := i.fullMetaDataChace.Load(packageName); ok {
 		return cached.(models.PackageMetadata)
 	}
-	metaData := i.httpHandler.FetchFullMetaData(packageName)
+	metaData, err := i.httpHandler.FetchFullMetaData(packageName)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
 	i.fullMetaDataChace.Store(packageName, metaData)
 	return metaData
 }
