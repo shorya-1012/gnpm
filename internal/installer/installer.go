@@ -55,9 +55,9 @@ func NewInstaller() *Installer {
 	installer := Installer{
 		Dependencies: make(models.DependencyMap),
 		ResolvedMap:  make(map[string][]*semver.Version),
-		taskChan:     make(chan InstallTask, 1000),
-		downloadChan: make(chan DownloadTask, 1000),
-		sem:          make(chan struct{}, 32),
+		taskChan:     make(chan InstallTask, 256),
+		downloadChan: make(chan DownloadTask, 128),
+		sem:          make(chan struct{}, 64),
 		httpHandler:  httphandler.NewHttpHandler(),
 	}
 	return &installer
@@ -101,7 +101,6 @@ func (i *Installer) workerDownloader() {
 	for task := range i.downloadChan {
 		i.sem <- struct{}{}
 
-		// fmt.Println("From workerDownloader:", task.installPath)
 		err := i.httpHandler.DownloadAndInstallTarBall(task.tarball, task.installPath)
 		<-i.sem
 		if err != nil {
