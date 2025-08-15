@@ -5,11 +5,11 @@ import (
 	"os"
 
 	commandhandler "github.com/shorya-1012/gnpm/internal/command_handler"
-	"github.com/shorya-1012/gnpm/internal/profile"
+	// "github.com/shorya-1012/gnpm/internal/profile"
 )
 
 func main() {
-	profile.Setup()
+	// profile.Setup()
 
 	if len(os.Args) < 3 {
 		fmt.Println("Usage : \ngnpm install <package>")

@@ -104,17 +104,16 @@ func (h *HttpHandler) FetchFullMetaData(packageName string) (models.PackageMetad
 	return packageMetaData, nil
 }
 
-func (h *HttpHandler) DownloadAndInstallTarBall(url, destDir string) error {
-	if err := h.ensureDir(destDir, 0755); err != nil {
-		return fmt.Errorf("Failed to create target dir : %w", err)
-	}
-	response, err := h.httpClient.Get(url)
+func (h *HttpHandler) DownloadTarBall(url string) (io.ReadCloser, error) {
+	resp, err := h.httpClient.Get(url)
 	if err != nil {
-		return fmt.Errorf("Unable to fetch tarball : %w", err)
+		return nil, err
 	}
-	defer response.Body.Close()
+	return resp.Body, nil
+}
 
-	gzReader, err := pgzip.NewReaderN(response.Body, 2<<20, 8)
+func (h *HttpHandler) InstallTarBall(response io.Reader, destDir string) error {
+	gzReader, err := pgzip.NewReaderN(response, 1<<20, 8)
 	if err != nil {
 		return fmt.Errorf("Failed to create gzip reader : %w", err)
 	}

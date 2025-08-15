@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,8 +35,10 @@ type Installer struct {
 
 	resolveChan  chan InstallTask
 	downloadChan chan DownloadTask
+	extractChan  chan ExtractTask
 	resolveWg    sync.WaitGroup
 	downloadWg   sync.WaitGroup
+	extractWg    sync.WaitGroup
 
 	sem chan struct{}
 }
@@ -58,6 +61,12 @@ type DownloadTask struct {
 	installPath string
 }
 
+type ExtractTask struct {
+	Name     string
+	Reader   io.ReadCloser
+	DestPath string
+}
+
 func NewInstaller() *Installer {
 	installer := Installer{
 		Dependencies:      make(models.DependencyMap),
@@ -67,6 +76,7 @@ func NewInstaller() *Installer {
 		downloadCache:     make(map[string]struct{}),
 		resolveChan:       make(chan InstallTask, 64),
 		downloadChan:      make(chan DownloadTask, 32),
+		extractChan:       make(chan ExtractTask, 32),
 		sem:               make(chan struct{}, 8),
 		httpHandler:       httphandler.NewHttpHandler(),
 	}
@@ -85,6 +95,10 @@ func (i *Installer) HandleInstall(packageName string) {
 		go i.workerDownloader()
 	}
 
+	for w := 0; w < baseWorkerCount; w++ {
+		go i.workerExtractor()
+	}
+
 	packageName, packageVersion := parser.ParseVersion(packageName)
 	i.enqueueResolveTask(packageName, packageVersion, nil)
 
@@ -93,6 +107,9 @@ func (i *Installer) HandleInstall(packageName string) {
 
 	i.downloadWg.Wait()
 	close(i.downloadChan)
+
+	i.extractWg.Wait()
+	close(i.extractChan)
 }
 
 func (i *Installer) enqueueResolveTask(name, version string, parent *string) {
@@ -110,13 +127,36 @@ func (i *Installer) resolveWorker() {
 func (i *Installer) workerDownloader() {
 	for task := range i.downloadChan {
 		i.sem <- struct{}{}
-		err := i.httpHandler.DownloadAndInstallTarBall(task.tarball, task.installPath)
+
+		reader, err := i.httpHandler.DownloadTarBall(task.tarball)
+		if err != nil {
+			fmt.Println("Failed to download:", task.name)
+			<-i.sem
+			i.downloadWg.Done()
+			continue
+		}
+
+		i.extractWg.Add(1)
+		i.extractChan <- ExtractTask{
+			Name:     task.name,
+			Reader:   reader,
+			DestPath: task.installPath,
+		}
+
 		<-i.sem
 
-		if err != nil {
-			fmt.Println("Failed to install package : ", task.name)
-		}
 		i.downloadWg.Done()
+	}
+}
+
+func (i *Installer) workerExtractor() {
+	for task := range i.extractChan {
+		err := i.httpHandler.InstallTarBall(task.Reader, task.DestPath)
+		task.Reader.Close()
+		if err != nil {
+			fmt.Println("Failed to extract:", task.Name, err)
+		}
+		i.extractWg.Done()
 	}
 }
 
