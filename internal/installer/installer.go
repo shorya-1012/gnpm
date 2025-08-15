@@ -65,9 +65,9 @@ func NewInstaller() *Installer {
 		metaDataCache:     make(map[string]models.PackageVersionMetadata),
 		fullMetaDataCache: make(map[string]models.PackageMetadata),
 		downloadCache:     make(map[string]struct{}),
-		resolveChan:       make(chan InstallTask, 256),
-		downloadChan:      make(chan DownloadTask, 128),
-		sem:               make(chan struct{}, 64),
+		resolveChan:       make(chan InstallTask, 64),
+		downloadChan:      make(chan DownloadTask, 32),
+		sem:               make(chan struct{}, 8),
 		httpHandler:       httphandler.NewHttpHandler(),
 	}
 	return &installer
@@ -253,7 +253,7 @@ func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion st
 func (i *Installer) fetchFullMetaDataWithCache(packageName string) models.PackageMetadata {
 	i.cacheMutex.RLock()
 	if cached, ok := i.fullMetaDataCache[packageName]; ok {
-		i.versionCacheMutex.RUnlock()
+		i.cacheMutex.RUnlock()
 		return cached
 	}
 	i.cacheMutex.RUnlock()

@@ -2,7 +2,6 @@ package httphandler
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,14 +9,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/klauspost/pgzip"
 	"github.com/shorya-1012/gnpm/internal/constants"
 	"github.com/shorya-1012/gnpm/internal/models"
 )
 
 type HttpHandler struct {
-	httpClient *http.Client
+	httpClient    *http.Client
+	createDirs    map[string]struct{}
+	dirCacheMutex sync.RWMutex
 }
 
 func NewHttpHandler() *HttpHandler {
@@ -31,6 +34,7 @@ func NewHttpHandler() *HttpHandler {
 				ForceAttemptHTTP2:   true,
 			},
 		},
+		createDirs: make(map[string]struct{}),
 	}
 	return &handler
 }
@@ -100,21 +104,20 @@ func (h *HttpHandler) FetchFullMetaData(packageName string) (models.PackageMetad
 	return packageMetaData, nil
 }
 
-func (h *HttpHandler) DownloadAndInstallTarBall(url string, destDir string) error {
+func (h *HttpHandler) DownloadAndInstallTarBall(url, destDir string) error {
+	if err := h.ensureDir(destDir, 0755); err != nil {
+		return fmt.Errorf("Failed to create target dir : %w", err)
+	}
 	response, err := h.httpClient.Get(url)
-
 	if err != nil {
-		fmt.Println("Unable to get Tarball")
-		fmt.Println(err)
+		return fmt.Errorf("Unable to fetch tarball : %w", err)
 	}
 	defer response.Body.Close()
 
-	gzReader, err := gzip.NewReader(response.Body)
+	gzReader, err := pgzip.NewReaderN(response.Body, 2<<20, 8)
 	if err != nil {
-		fmt.Println("Unable to create gzReader")
-		fmt.Println(err)
+		return fmt.Errorf("Failed to create gzip reader : %w", err)
 	}
-	defer gzReader.Close()
 
 	tarReader := tar.NewReader(gzReader)
 
@@ -123,35 +126,50 @@ func (h *HttpHandler) DownloadAndInstallTarBall(url string, destDir string) erro
 		if err == io.EOF {
 			break
 		}
+
 		if err != nil {
-			fmt.Println(err)
+			return fmt.Errorf("Unable to read tar : %w", err)
 		}
 
+		// remove "pacakage/" prefix
 		relPath := strings.TrimPrefix(header.Name, "package/")
 		targetPath := filepath.Join(destDir, relPath)
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, 0755); err != nil {
-				return fmt.Errorf("mkdir failed: %w", err)
+			if err := h.ensureDir(targetPath, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("failed to create dir: %w", err)
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return fmt.Errorf("mkdir parent failed: %w", err)
+			// Ensure parent dir exists
+			if err := h.ensureDir(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create parent dir: %w", err)
 			}
+
 			outFile, err := os.Create(targetPath)
 			if err != nil {
-				return fmt.Errorf("create file failed: %w", err)
+				return fmt.Errorf("failed to create file: %w", err)
 			}
+
+			// Stream file contents directly
 			if _, err := io.Copy(outFile, tarReader); err != nil {
 				outFile.Close()
-				return fmt.Errorf("write file failed: %w", err)
+				return fmt.Errorf("failed to write file: %w", err)
 			}
 			outFile.Close()
-		default:
-			//ignore
 		}
-
 	}
+
 	return nil
+}
+
+func (h *HttpHandler) ensureDir(path string, mode os.FileMode) error {
+	h.dirCacheMutex.Lock()
+	if _, exists := h.createDirs[path]; exists {
+		h.dirCacheMutex.Unlock()
+		return nil
+	}
+	h.createDirs[path] = struct{}{}
+	h.dirCacheMutex.Unlock()
+	return os.MkdirAll(path, mode)
 }
