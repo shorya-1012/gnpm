@@ -33,6 +33,7 @@ func DebugMap(mp DependencyMap) {
 	}
 }
 
+// For debugging
 func (v PackageVersionMetadata) String() string {
 	return fmt.Sprintf("%s\n%s\n%+v\n%+v\n", v.Name, v.Version, v.Dist, v.Dependencies)
 }

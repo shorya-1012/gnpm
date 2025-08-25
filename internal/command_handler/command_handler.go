@@ -26,10 +26,9 @@ func (ch *CommandHandler) DebugDisplay() {
 
 func (ch *CommandHandler) Execute() {
 	switch ch.command {
-	case "install":
+	case "i", "install":
 		fmt.Println("Installing ... ")
 		installer := installer.NewInstaller()
-		// var installer installer.Installer
 		installer.HandleInstall(ch.argument)
 	default:
 		fmt.Println("Command not found")

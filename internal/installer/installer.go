@@ -22,8 +22,7 @@ type Installer struct {
 	ResolvedMap       map[string][]*semver.Version
 	metaDataCache     map[string]models.PackageVersionMetadata
 	fullMetaDataCache map[string]models.PackageMetadata
-	// downloadCache     sync.Map
-	downloadCache map[string]struct{}
+	downloadCache     map[string]struct{}
 
 	depsMutex         sync.RWMutex
 	resolvedMutex     sync.RWMutex
@@ -41,12 +40,6 @@ type Installer struct {
 	extractWg    sync.WaitGroup
 
 	sem chan struct{}
-}
-
-type PackageInstallInfo struct {
-	name            string
-	versionMetaData models.PackageVersionMetadata
-	stringified     string
 }
 
 type InstallTask struct {
@@ -112,58 +105,14 @@ func (i *Installer) HandleInstall(packageName string) {
 	close(i.extractChan)
 }
 
-func (i *Installer) enqueueResolveTask(name, version string, parent *string) {
-	i.resolveWg.Add(1)
-	i.resolveChan <- InstallTask{Name: name, Version: version, Parent: parent}
-}
-
-func (i *Installer) resolveWorker() {
-	for task := range i.resolveChan {
-		i.installPackage(task.Name, task.Version, task.Parent)
-		i.resolveWg.Done()
-	}
-}
-
-func (i *Installer) workerDownloader() {
-	for task := range i.downloadChan {
-		i.sem <- struct{}{}
-
-		reader, err := i.httpHandler.DownloadTarBall(task.tarball)
-		if err != nil {
-			fmt.Println("Failed to download:", task.name)
-			<-i.sem
-			i.downloadWg.Done()
-			continue
-		}
-
-		i.extractWg.Add(1)
-		i.extractChan <- ExtractTask{
-			Name:     task.name,
-			Reader:   reader,
-			DestPath: task.installPath,
-		}
-
-		<-i.sem
-
-		i.downloadWg.Done()
-	}
-}
-
-func (i *Installer) workerExtractor() {
-	for task := range i.extractChan {
-		err := i.httpHandler.InstallTarBall(task.Reader, task.DestPath)
-		task.Reader.Close()
-		if err != nil {
-			fmt.Println("Failed to extract:", task.Name, err)
-		}
-		i.extractWg.Done()
-	}
-}
-
 func (i *Installer) installPackage(packageName string, packageVersion string, parent *string) {
 	fullVersion, _ := semver.NewVersion(packageVersion)
-	var pkgInfo PackageInstallInfo
 	var pkgMetadata models.PackageVersionMetadata
+
+	/*
+	 semver.NewVersion only return a value if the given stirng is a complete sem version,
+	 it thows an error if the provided string is a constraint in which case we have to resolve it
+	*/
 
 	if fullVersion == nil {
 		pkgMetadata = i.handleSemVerInstall(&packageName, &packageVersion)
@@ -180,24 +129,21 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 			if parent != nil {
 				i.appendVersion(parent, versionString)
 			}
-
 			return
 		}
 
 		pkgMetadata = i.fetchMetaDataWithCache(packageName, fullVersion.String())
 	}
 
-	pkgInfo.name = packageName
-	pkgInfo.stringified = fmt.Sprintf("%s@%s", packageName, fullVersion.String())
-	pkgInfo.versionMetaData = pkgMetadata
+	pkgInfoStringified := fmt.Sprintf("%s@%s", packageName, fullVersion.String())
 
 	if parent != nil {
-		i.appendVersion(parent, pkgInfo.stringified)
+		i.appendVersion(parent, pkgInfoStringified)
 	}
 
 	// resolve dependencies recursively
-	for depName, depVersion := range pkgInfo.versionMetaData.Dependencies {
-		i.enqueueResolveTask(depName, depVersion, &pkgInfo.name)
+	for depName, depVersion := range pkgMetadata.Dependencies {
+		i.enqueueResolveTask(depName, depVersion, &packageName)
 	}
 
 	i.resolvedMutex.Lock()
@@ -211,7 +157,7 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 	i.ResolvedMap[packageName] = resolvedInfo
 	i.resolvedMutex.Unlock()
 
-	key := pkgInfo.stringified
+	key := pkgInfoStringified
 	i.downloadMutex.Lock()
 	_, alreadyDownloading := i.downloadCache[key]
 	if !alreadyDownloading {
@@ -224,8 +170,8 @@ func (i *Installer) installPackage(packageName string, packageVersion string, pa
 		i.downloadCache[key] = struct{}{}
 		i.downloadWg.Add(1)
 		i.downloadChan <- DownloadTask{
-			name:        pkgInfo.name,
-			tarball:     pkgInfo.versionMetaData.Dist.Tarball,
+			name:        packageName,
+			tarball:     pkgMetadata.Dist.Tarball,
 			installPath: filepath.Join("node_modules", packageName),
 		}
 	}
@@ -269,55 +215,17 @@ func (i *Installer) appendVersion(parent *string, packageVersion string) {
 	i.Dependencies[*parent] = parentInfo
 }
 
-func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion string) models.PackageVersionMetadata {
-	key := fmt.Sprintf("%s@%s", packageName, packageVersion)
-	i.versionCacheMutex.RLock()
-
-	if cached, ok := i.metaDataCache[key]; ok {
-		i.versionCacheMutex.RUnlock()
-		return cached
-	}
-	i.versionCacheMutex.RUnlock()
-
-	metaData, err := i.httpHandler.FetchMetaDataWithVersion(packageName, packageVersion)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	i.versionCacheMutex.Lock()
-	defer i.versionCacheMutex.Unlock()
-	i.metaDataCache[key] = metaData
-	return metaData
-}
-
-func (i *Installer) fetchFullMetaDataWithCache(packageName string) models.PackageMetadata {
-	i.cacheMutex.RLock()
-	if cached, ok := i.fullMetaDataCache[packageName]; ok {
-		i.cacheMutex.RUnlock()
-		return cached
-	}
-	i.cacheMutex.RUnlock()
-
-	metaData, err := i.httpHandler.FetchFullMetaData(packageName)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	i.cacheMutex.Lock()
-	defer i.cacheMutex.Unlock()
-	i.fullMetaDataCache[packageName] = metaData
-	return metaData
-}
-
 func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string) models.PackageVersionMetadata {
 	if *semVersion == "latest" {
 		return i.fetchMetaDataWithCache(*packageName, "latest")
 	}
-	// if the version is not latest than it has to be a constraint like ^1.1.0
 
-	// try to normalize constrainst if they are in the wrong format
-	// like >= 2.1.2 < 3.0.0 (semver throws a error here)
+	/*
+		if the version is not latest than it has to be a constraint like ^1.1.0
+
+		try to normalize constrainst if they are in the wrong format
+		like >= 2.1.2 < 3.0.0 (semver throws a error here)
+	*/
 	re := regexp.MustCompile(`(>=|>|<=|<|=|~|\^)?\s*([\d]+\.[\d]+\.[\d]+)`)
 	matches := re.FindAllString(*semVersion, -1)
 
@@ -371,4 +279,94 @@ func (i *Installer) handleSemVerInstall(packageName *string, semVersion *string)
 	}
 
 	return pkgFullMetaData.Versions[finalVersion.String()]
+}
+
+func (i *Installer) fetchMetaDataWithCache(packageName string, packageVersion string) models.PackageVersionMetadata {
+	key := fmt.Sprintf("%s@%s", packageName, packageVersion)
+	i.versionCacheMutex.RLock()
+
+	if cached, ok := i.metaDataCache[key]; ok {
+		i.versionCacheMutex.RUnlock()
+		return cached
+	}
+	i.versionCacheMutex.RUnlock()
+
+	metaData, err := i.httpHandler.FetchMetaDataWithVersion(packageName, packageVersion)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	i.versionCacheMutex.Lock()
+	defer i.versionCacheMutex.Unlock()
+	i.metaDataCache[key] = metaData
+	return metaData
+}
+
+func (i *Installer) fetchFullMetaDataWithCache(packageName string) models.PackageMetadata {
+	i.cacheMutex.RLock()
+	if cached, ok := i.fullMetaDataCache[packageName]; ok {
+		i.cacheMutex.RUnlock()
+		return cached
+	}
+	i.cacheMutex.RUnlock()
+
+	metaData, err := i.httpHandler.FetchFullMetaData(packageName)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	i.cacheMutex.Lock()
+	defer i.cacheMutex.Unlock()
+	i.fullMetaDataCache[packageName] = metaData
+	return metaData
+}
+
+// Workers
+func (i *Installer) enqueueResolveTask(name, version string, parent *string) {
+	i.resolveWg.Add(1)
+	i.resolveChan <- InstallTask{Name: name, Version: version, Parent: parent}
+}
+
+func (i *Installer) resolveWorker() {
+	for task := range i.resolveChan {
+		i.installPackage(task.Name, task.Version, task.Parent)
+		i.resolveWg.Done()
+	}
+}
+
+func (i *Installer) workerDownloader() {
+	for task := range i.downloadChan {
+		i.sem <- struct{}{}
+
+		reader, err := i.httpHandler.DownloadTarBall(task.tarball)
+		if err != nil {
+			fmt.Println("Failed to download:", task.name)
+			<-i.sem
+			i.downloadWg.Done()
+			continue
+		}
+
+		i.extractWg.Add(1)
+		i.extractChan <- ExtractTask{
+			Name:     task.name,
+			Reader:   reader,
+			DestPath: task.installPath,
+		}
+
+		<-i.sem
+
+		i.downloadWg.Done()
+	}
+}
+
+func (i *Installer) workerExtractor() {
+	for task := range i.extractChan {
+		err := i.httpHandler.InstallTarBall(task.Reader, task.DestPath)
+		task.Reader.Close()
+		if err != nil {
+			fmt.Println("Failed to extract:", task.Name, err)
+		}
+		i.extractWg.Done()
+	}
 }

@@ -13,9 +13,10 @@ import (
 	"time"
 
 	"github.com/klauspost/pgzip"
-	"github.com/shorya-1012/gnpm/internal/constants"
 	"github.com/shorya-1012/gnpm/internal/models"
 )
+
+const RegistryBaseURL string = "https://registry.npmjs.org"
 
 type HttpHandler struct {
 	httpClient    *http.Client
@@ -46,8 +47,10 @@ func createRequest(requestUrl string) *http.Request {
 		fmt.Println(err)
 	}
 
-	// I don't actually know what this does
-	//  but somehow this makes the request faster by reducing response body size
+	/*
+		I don't actually know what this does
+		but somehow this makes the request faster by reducing response body size
+	*/
 	request.Header.Set("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*")
 	return request
 }
@@ -55,7 +58,7 @@ func createRequest(requestUrl string) *http.Request {
 // should be prioritised lesser response size
 func (h *HttpHandler) FetchMetaDataWithVersion(packageName string, fullVersion string) (models.PackageVersionMetadata, error) {
 
-	requestUrl := fmt.Sprintf("%s/%s/%s", constants.RegistryBaseURL, packageName, fullVersion)
+	requestUrl := fmt.Sprintf("%s/%s/%s", RegistryBaseURL, packageName, fullVersion)
 	request := createRequest(requestUrl)
 
 	response, err := h.httpClient.Do(request)
@@ -81,7 +84,7 @@ func (h *HttpHandler) FetchMetaDataWithVersion(packageName string, fullVersion s
 
 // should be avoided as slower
 func (h *HttpHandler) FetchFullMetaData(packageName string) (models.PackageMetadata, error) {
-	requestUrl := fmt.Sprintf("%s/%s", constants.RegistryBaseURL, packageName)
+	requestUrl := fmt.Sprintf("%s/%s", RegistryBaseURL, packageName)
 	request := createRequest(requestUrl)
 
 	response, err := h.httpClient.Do(request)
